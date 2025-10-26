@@ -1,0 +1,361 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Daily Competition – 5‑Player Line Chart</title>
+    <!-- Tailwind (CDN) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- React 18 + ReactDOM (UMD) -->
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <!-- Recharts (UMD) -->
+    <script src="https://unpkg.com/recharts/umd/Recharts.min.js"></script>
+    <!-- Babel for in-browser JSX transform (simple static hosting) -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  </head>
+  <body class="min-h-screen bg-gray-50 text-gray-900">
+    <div id="root"></div>
+
+    <script type="text/babel">
+      const { useEffect, useMemo, useState } = React;
+      const {
+        LineChart,
+        Line,
+        XAxis,
+        YAxis,
+        CartesianGrid,
+        Tooltip,
+        Legend,
+        ResponsiveContainer,
+      } = Recharts;
+
+      const DEFAULT_PLAYERS = ["Player 1", "Player 2", "Player 3", "Player 4", "Player 5"];
+
+      function fmtDate(d) {
+        if (typeof d === "string") return d;
+        return new Date(d).toISOString().slice(0, 10);
+      }
+
+      function parseDate(input) {
+        return fmtDate(new Date(input));
+      }
+
+      const STORAGE_KEY = "daily-competition-v2";
+
+      function DailyCompetitionChart() {
+        const [players, setPlayers] = useState(DEFAULT_PLAYERS);
+        const [colors, setColors] = useState(["#1f77b4", "#ff7f0e", "#7f7f7f", "#2ca02c", "#d62728"]);
+        const [entries, setEntries] = useState([]);
+        const [selectedDate, setSelectedDate] = useState(fmtDate(new Date()));
+        const [formPoints, setFormPoints] = useState([0, 0, 0, 0, 0]);
+        const [cumulative, setCumulative] = useState(true);
+        const [pointsOnX, setPointsOnX] = useState(false);
+
+        useEffect(() => {
+          try {
+            const raw = localStorage.getItem(STORAGE_KEY);
+            if (raw) {
+              const parsed = JSON.parse(raw);
+              if (parsed.players && parsed.players.length === 5) setPlayers(parsed.players);
+              if (Array.isArray(parsed.entries)) setEntries(parsed.entries);
+              if (typeof parsed.cumulative === "boolean") setCumulative(parsed.cumulative);
+              if (typeof parsed.pointsOnX === "boolean") setPointsOnX(parsed.pointsOnX);
+              if (Array.isArray(parsed.colors) && parsed.colors.length === 5) setColors(parsed.colors);
+            }
+          } catch (e) {
+            console.warn("Failed to load storage", e);
+          }
+        }, []);
+
+        useEffect(() => {
+          const payload = { players, entries, cumulative, pointsOnX, colors };
+          try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+          } catch {}
+        }, [players, entries, cumulative, pointsOnX, colors]);
+
+        const sortedEntries = useMemo(() => {
+          const copy = [...entries];
+          copy.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+          return copy;
+        }, [entries]);
+
+        const chartData = useMemo(() => {
+          if (sortedEntries.length === 0) return [];
+
+          if (!cumulative) {
+            return sortedEntries.map((row) => {
+              const obj = { date: row.date };
+              players.forEach((p, i) => {
+                obj[p] = row[`p${i}`] || 0;
+              });
+              return obj;
+            });
+          }
+
+          const totals = new Array(5).fill(0);
+          return sortedEntries.map((row) => {
+            const obj = { date: row.date };
+            players.forEach((p, i) => {
+              totals[i] += row[`p${i}`] || 0;
+              obj[p] = totals[i];
+            });
+            return obj;
+          });
+        }, [sortedEntries, players, cumulative]);
+
+        const totals = useMemo(() => {
+          const t = new Array(5).fill(0);
+          for (const row of entries) {
+            for (let i = 0; i < 5; i++) t[i] += row[`p${i}`] || 0;
+          }
+          return t.map((v, i) => ({ name: players[i], total: v }));
+        }, [entries, players]);
+
+        const sortedTotals = useMemo(() => [...totals].sort((a, b) => b.total - a.total), [totals]);
+
+        const addOrUpdateEntry = () => {
+          const date = parseDate(selectedDate);
+          const values = formPoints.map((n) => Number(n) || 0);
+          setEntries((prev) => {
+            const idx = prev.findIndex((r) => r.date === date);
+            if (idx === -1) return [...prev, { date, ...Object.fromEntries(values.map((v, i) => [`p${i}`, v])) }];
+            const copy = [...prev];
+            copy[idx] = { date, ...Object.fromEntries(values.map((v, i) => [`p${i}`, v])) };
+            return copy;
+          });
+        };
+
+        const removeEntry = (date) => setEntries((prev) => prev.filter((r) => r.date !== date));
+
+        const updatePlayerName = (i, name) => {
+          const copy = [...players];
+          copy[i] = name;
+          setPlayers(copy);
+        };
+
+        const downloadJSON = () => {
+          const blob = new Blob([JSON.stringify({ players, entries, colors }, null, 2)], {
+            type: "application/json",
+          });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = "daily-competition.json";
+          a.click();
+          URL.revokeObjectURL(url);
+        };
+
+        const importJSON = (file) => {
+          const reader = new FileReader();
+          reader.onload = () => {
+            try {
+              const obj = JSON.parse(reader.result);
+              if (Array.isArray(obj.players) && obj.players.length === 5) setPlayers(obj.players);
+              if (Array.isArray(obj.entries)) {
+                setEntries(
+                  obj.entries.map((r) => {
+                    const row = { date: parseDate(r.date) };
+                    for (let i = 0; i < 5; i++) row[`p${i}`] = Number(r[`p${i}`]) || 0;
+                    return row;
+                  })
+                );
+              }
+              if (Array.isArray(obj.colors) && obj.colors.length === 5) setColors(obj.colors.map(String));
+            } catch (e) {
+              alert("Invalid JSON file");
+            }
+          };
+          reader.readAsText(file);
+        };
+
+        const rechartsData = useMemo(() => chartData.map((d) => ({ ...d, label: d.date })), [chartData]);
+
+        return (
+          <div className="mx-auto max-w-6xl px-4 py-8">
+            <header className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+              <div>
+                <h1 className="text-2xl font-bold">Daily Competition</h1>
+                <p className="text-sm text-gray-600">5 players • line chart • persistent</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={downloadJSON}
+                  className="rounded-2xl border border-gray-300 px-3 py-1.5 text-sm hover:bg-gray-100"
+                >
+                  Export JSON
+                </button>
+                <label className="rounded-2xl border border-gray-300 px-3 py-1.5 text-sm hover:bg-gray-100 cursor-pointer">
+                  Import JSON
+                  <input
+                    type="file"
+                    accept="application/json"
+                    className="hidden"
+                    onChange={(e) => e.target.files?.[0] && importJSON(e.target.files[0])}
+                  />
+                </label>
+              </div>
+            </header>
+
+            {/* Player Names */}
+            <section className="mt-6 grid grid-cols-1 gap-3 rounded-2xl bg-white p-4 shadow-sm sm:grid-cols-2 lg:grid-cols-5">
+              {players.map((name, i) => (
+                <div key={i} className="flex flex-col">
+                  <label className="text-xs text-gray-500">Player {i + 1} name & color</label>
+                  <div className="mt-1 flex items-center gap-2">
+                    <input
+                      className="flex-1 rounded-xl border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring"
+                      value={name}
+                      onChange={(e) => updatePlayerName(i, e.target.value)}
+                    />
+                    <input
+                      type="color"
+                      className="h-9 w-12 cursor-pointer rounded-md border border-gray-300"
+                      value={colors[i]}
+                      onChange={(e) => {
+                        const copy = [...colors];
+                        copy[i] = e.target.value;
+                        setColors(copy);
+                      }}
+                    />
+                  </div>
+                </div>
+              ))}
+            </section>
+
+            {/* Controls */}
+            <section className="mt-4 flex flex-wrap items-center gap-3 rounded-2xl bg-white p-4 shadow-sm">
+              <div className="flex items-center gap-2">
+                <input id="cum" type="checkbox" checked={cumulative} onChange={(e) => setCumulative(e.target.checked)} />
+                <label htmlFor="cum" className="text-sm">Cumulative</label>
+              </div>
+              <div className="flex items-center gap-2">
+                <input id="axis" type="checkbox" checked={pointsOnX} onChange={(e) => setPointsOnX(e.target.checked)} />
+                <label htmlFor="axis" className="text-sm">X = points, Y = time</label>
+              </div>
+            </section>
+
+            {/* Entry Form */}
+            <section className="mt-4 grid grid-cols-1 gap-4 rounded-2xl bg-white p-4 shadow-sm md:grid-cols-6">
+              <div className="md:col-span-1">
+                <label className="text-xs text-gray-500">Date</label>
+                <input
+                  type="date"
+                  className="mt-1 w-full rounded-xl border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring"
+                  value={selectedDate}
+                  onChange={(e) => setSelectedDate(e.target.value)}
+                />
+              </div>
+              {players.map((_, i) => (
+                <div key={i} className="md:col-span-1">
+                  <label className="text-xs text-gray-500">{players[i]} points</label>
+                  <input
+                    type="number"
+                    min="0"
+                    className="mt-1 w-full rounded-xl border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring"
+                    value={formPoints[i]}
+                    onChange={(e) => {
+                      const copy = [...formPoints];
+                      copy[i] = e.target.value;
+                      setFormPoints(copy);
+                    }}
+                  />
+                </div>
+              ))}
+              <div className="md:col-span-6 flex justify-end">
+                <button
+                  onClick={addOrUpdateEntry}
+                  className="rounded-2xl bg-gray-900 px-4 py-2 text-sm font-medium text-white hover:bg-black"
+                >
+                  Add / Update Day
+                </button>
+              </div>
+            </section>
+
+            {/* Table */}
+            <section className="mt-4 overflow-x-auto rounded-2xl bg-white p-4 shadow-sm">
+              <table className="min-w-full text-sm">
+                <thead>
+                  <tr className="text-left text-gray-500">
+                    <th className="py-2 pr-4">Date</th>
+                    {players.map((p, i) => (
+                      <th key={i} className="py-2 pr-4">{p}</th>
+                    ))}
+                    <th className="py-2">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sortedEntries.map((row) => (
+                    <tr key={row.date} className="border-t">
+                      <td className="py-2 pr-4 font-medium">{row.date}</td>
+                      {players.map((_, i) => (
+                        <td key={i} className="py-2 pr-4">{row[`p${i}`]}</td>
+                      ))}
+                      <td className="py-2">
+                        <button
+                          onClick={() => removeEntry(row.date)}
+                          className="rounded-xl border border-red-300 px-2 py-1 text-xs text-red-600 hover:bg-red-50"
+                        >
+                          Delete
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                  {sortedEntries.length === 0 && (
+                    <tr>
+                      <td className="py-2 text-gray-500" colSpan={players.length + 2}>
+                        No entries yet. Add your first day above.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </section>
+
+            {/* Chart */}
+            <section className="mt-6 rounded-2xl bg-white p-4 shadow-sm">
+              <h2 className="mb-2 text-lg font-semibold">Line Chart</h2>
+              <div className="h-80 w-full">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={rechartsData} margin={{ top: 10, right: 20, left: 0, bottom: 10 }}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="label" label={{ value: "Date", position: "insideBottomRight", offset: -5 }} />
+                    <YAxis label={{ value: "Points", angle: -90, position: "insideLeft" }} />
+                    <Tooltip />
+                    <Legend />
+                    {players.map((p, i) => (
+                      <Line key={p} dataKey={p} name={p} stroke={colors[i]} strokeWidth={2} />
+                    ))}
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </section>
+
+            {/* Leaderboard */}
+            <section className="mt-6 rounded-2xl bg-white p-4 shadow-sm">
+              <h2 className="mb-2 text-lg font-semibold">Leaderboard (Total Points)</h2>
+              <ol className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-5">
+                {sortedTotals.map((t, idx) => (
+                  <li key={t.name} className="rounded-2xl border border-gray-200 p-3 text-sm">
+                    <div className="flex items-center justify-between">
+                      <span className="font-medium">{idx + 1}. {t.name}</span>
+                      <span className="rounded-xl bg-gray-100 px-2 py-0.5 text-xs">{t.total}</span>
+                    </div>
+                  </li>
+                ))}
+              </ol>
+            </section>
+
+            <section className="mt-6 text-xs text-gray-500">
+              <p>Pro tip: Use Export/Import JSON to keep everyone in sync, or paste the JSON into a shared note.</p>
+            </section>
+          </div>
+        );
+      }
+
+      const root = ReactDOM.createRoot(document.getElementById("root"));
+      root.render(<DailyCompetitionChart />);
+    </script>
+  </body>
+</html>
